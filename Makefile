@@ -6,6 +6,16 @@ IMAGE_GIT_TAG ?= $(shell git describe --abbrev=8 --tags)
 IMG ?= $(REPO)/kubemacpool
 OCI_BIN ?= $(shell if podman ps >/dev/null 2>&1; then echo podman; elif docker ps >/dev/null 2>&1; then echo docker; fi)
 TLS_SETTING := $(if $(filter $(OCI_BIN),podman),--tls-verify=false,)
+PLATFORMS ?= linux/amd64,linux/s390x
+# Set the platforms for building a multi-platform supported image.
+# Example:
+# PLATFORMS ?= linux/amd64,linux/arm64,linux/s390x
+# Alternatively, you can export the PLATFORMS variable like this:
+# export PLATFORMS=linux/arm64,linux/s390x,linux/amd64
+ARCH := $(shell uname -m | sed 's/x86_64/amd64/')
+DOCKER_BUILDER ?= kubemacpool-docker-builder
+KUBEMACPOOL_IMAGE_TAGGED_1 := ${REGISTRY}/${IMG}:${IMAGE_TAG}
+KUBEMACPOOL_IMAGE_TAGGED_2 := ${REGISTRY}/${IMG}:${IMAGE_GIT_TAG}
 
 BIN_DIR = $(CURDIR)/build/_output/bin/
 
@@ -83,18 +93,23 @@ generate: generate-go generate-deploy generate-test generate-external
 check: $(GO)
 	./hack/check.sh
 
-manager: $(GO)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -o $(BIN_DIR)/manager github.com/k8snetworkplumbingwg/kubemacpool/cmd/manager
-
 # Build the docker image
-container: manager
-	$(OCI_BIN) build build/ -t ${REGISTRY}/${IMG}:${IMAGE_TAG}
+container:
+ifeq ($(OCI_BIN),podman)
+	$(MAKE) build-multiarch-kubemacpool-podman
+else ifeq ($(OCI_BIN),docker)
+	$(MAKE) build-multiarch-kubemacpool-docker
+else
+	$(error Unsupported OCI_BIN value: $(OCI_BIN))
+endif
 
 # Push the docker image
 docker-push:
-	$(OCI_BIN) push ${TLS_SETTING} ${REGISTRY}/${IMG}:${IMAGE_TAG}
-	$(OCI_BIN) tag ${REGISTRY}/${IMG}:${IMAGE_TAG} ${REGISTRY}/${IMG}:${IMAGE_GIT_TAG}
-	$(OCI_BIN) push ${TLS_SETTING} ${REGISTRY}/${IMG}:${IMAGE_GIT_TAG}
+ifeq ($(OCI_BIN),podman)
+	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_TAGGED_1} ${KUBEMACPOOL_IMAGE_TAGGED_1}
+	podman tag ${KUBEMACPOOL_IMAGE_TAGGED_1} ${KUBEMACPOOL_IMAGE_TAGGED_2}
+	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_TAGGED_2} ${KUBEMACPOOL_IMAGE_TAGGED_2}
+endif
 
 cluster-up:
 	./cluster/up.sh
@@ -115,7 +130,15 @@ vendor: $(GO)
 	$(GO) mod tidy -compat=$(GO_VERSION)
 	$(GO) mod vendor
 
+build-multiarch-kubemacpool-docker:
+	ARCH=$(ARCH) PLATFORMS=$(PLATFORMS) KUBEMACPOOL_IMAGE_TAGGED_1=$(KUBEMACPOOL_IMAGE_TAGGED_1) KUBEMACPOOL_IMAGE_TAGGED_2=$(KUBEMACPOOL_IMAGE_TAGGED_2) DOCKER_BUILDER=$(DOCKER_BUILDER) ./hack/build-kubemacpool-docker.sh
+
+build-multiarch-kubemacpool-podman:
+	ARCH=$(ARCH) PLATFORMS=$(PLATFORMS) KUBEMACPOOL_IMAGE_TAGGED_1=$(KUBEMACPOOL_IMAGE_TAGGED_1) KUBEMACPOOL_IMAGE_TAGGED_2=$(KUBEMACPOOL_IMAGE_TAGGED_2) ./hack/build-kubemacpool-podman.sh
+
 .PHONY: \
+	build-multiarch-kubemacpool-docker \
+	build-multiarch-kubemacpool-podman \
 	vendor \
 	test \
 	deploy \
@@ -128,7 +151,6 @@ vendor: $(GO)
 	fmt \
 	vet \
 	check \
-	manager \
 	container \
 	push \
 	cluster-up \
