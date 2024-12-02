@@ -6,16 +6,19 @@ IMAGE_GIT_TAG ?= $(shell git describe --abbrev=8 --tags)
 IMG ?= $(REPO)/kubemacpool
 OCI_BIN ?= $(shell if podman ps >/dev/null 2>&1; then echo podman; elif docker ps >/dev/null 2>&1; then echo docker; fi)
 TLS_SETTING := $(if $(filter $(OCI_BIN),podman),--tls-verify=false,)
-PLATFORMS ?= linux/amd64,linux/s390x
-# Set the platforms for building a multi-platform supported image.
+PLATFORM_LIST ?= linux/amd64,linux/s390x,linux/arm64
+ARCH := $(shell uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+PLATFORMS ?= linux/${ARCH}
+PLATFORMS := $(if $(filter all,$(PLATFORMS)),$(PLATFORM_LIST),$(PLATFORMS))
+# Define the platforms for building a multi-platform image.
 # Example:
 # PLATFORMS ?= linux/amd64,linux/arm64,linux/s390x
-# Alternatively, you can export the PLATFORMS variable like this:
+# Alternatively, you can set the PLATFORMS variable using:
 # export PLATFORMS=linux/arm64,linux/s390x,linux/amd64
-ARCH := $(shell uname -m | sed 's/x86_64/amd64/')
+# or export PLATFORMS=all to automatically include all supported platforms.
 DOCKER_BUILDER ?= kubemacpool-docker-builder
-KUBEMACPOOL_IMAGE_TAGGED_1 := ${REGISTRY}/${IMG}:${IMAGE_TAG}
-KUBEMACPOOL_IMAGE_TAGGED_2 := ${REGISTRY}/${IMG}:${IMAGE_GIT_TAG}
+KUBEMACPOOL_IMAGE_TAGGED := ${REGISTRY}/${IMG}:${IMAGE_TAG}
+KUBEMACPOOL_IMAGE_GIT_TAGGED := ${REGISTRY}/${IMG}:${IMAGE_GIT_TAG}
 
 BIN_DIR = $(CURDIR)/build/_output/bin/
 
@@ -95,20 +98,14 @@ check: $(GO)
 
 # Build the docker image
 container:
-ifeq ($(OCI_BIN),podman)
-	$(MAKE) build-multiarch-kubemacpool-podman
-else ifeq ($(OCI_BIN),docker)
-	$(MAKE) build-multiarch-kubemacpool-docker
-else
-	$(error Unsupported OCI_BIN value: $(OCI_BIN))
-endif
+	./hack/build-multiarch-kubemacpool.sh $(ARCH) $(PLATFORMS) $(KUBEMACPOOL_IMAGE_TAGGED) $(KUBEMACPOOL_IMAGE_GIT_TAGGED) $(DOCKER_BUILDER) $(OCI_BIN)
 
 # Push the docker image
 docker-push:
 ifeq ($(OCI_BIN),podman)
-	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_TAGGED_1} ${KUBEMACPOOL_IMAGE_TAGGED_1}
-	podman tag ${KUBEMACPOOL_IMAGE_TAGGED_1} ${KUBEMACPOOL_IMAGE_TAGGED_2}
-	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_TAGGED_2} ${KUBEMACPOOL_IMAGE_TAGGED_2}
+	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_TAGGED} ${KUBEMACPOOL_IMAGE_TAGGED}
+	podman tag ${KUBEMACPOOL_IMAGE_TAGGED} ${KUBEMACPOOL_IMAGE_GIT_TAGGED}
+	podman manifest push ${TLS_SETTING} ${KUBEMACPOOL_IMAGE_GIT_TAGGED} ${KUBEMACPOOL_IMAGE_GIT_TAGGED}
 endif
 
 cluster-up:
@@ -130,15 +127,7 @@ vendor: $(GO)
 	$(GO) mod tidy -compat=$(GO_VERSION)
 	$(GO) mod vendor
 
-build-multiarch-kubemacpool-docker:
-	ARCH=$(ARCH) PLATFORMS=$(PLATFORMS) KUBEMACPOOL_IMAGE_TAGGED_1=$(KUBEMACPOOL_IMAGE_TAGGED_1) KUBEMACPOOL_IMAGE_TAGGED_2=$(KUBEMACPOOL_IMAGE_TAGGED_2) DOCKER_BUILDER=$(DOCKER_BUILDER) ./hack/build-kubemacpool-docker.sh
-
-build-multiarch-kubemacpool-podman:
-	ARCH=$(ARCH) PLATFORMS=$(PLATFORMS) KUBEMACPOOL_IMAGE_TAGGED_1=$(KUBEMACPOOL_IMAGE_TAGGED_1) KUBEMACPOOL_IMAGE_TAGGED_2=$(KUBEMACPOOL_IMAGE_TAGGED_2) ./hack/build-kubemacpool-podman.sh
-
 .PHONY: \
-	build-multiarch-kubemacpool-docker \
-	build-multiarch-kubemacpool-podman \
 	vendor \
 	test \
 	deploy \

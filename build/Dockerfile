@@ -1,17 +1,27 @@
 ARG BUILD_ARCH=amd64
 FROM --platform=linux/${BUILD_ARCH} quay.io/centos/centos:stream9 AS builder
-RUN dnf install -y tar gzip jq && dnf clean all
-RUN ARCH=$(uname -m | sed 's/x86_64/amd64/') && \
-    GO_VERSION=$(curl -L -s "https://go.dev/dl/?mode=json" | jq -r '.[0].version') && \
-    curl -L "https://go.dev/dl/${GO_VERSION}.linux-${ARCH}.tar.gz" -o go.tar.gz && \
-    tar -C /usr/local -xzf go.tar.gz && \
-    rm go.tar.gz
-ENV PATH=$PATH:/usr/local/go/bin
-WORKDIR /go/src/kubemacpool
-COPY . .
-
 ARG TARGETOS
 ARG TARGETARCH
+ENV TARGETOS=${TARGETOS:-linux}
+ENV TARGETARCH=${TARGETARCH:-amd64}
+
+ARG BUILDOS
+ARG BUILDARCH
+ENV BUILDOS=${BUILDOS:-linux}
+ENV BUILDARCH=${BUILDARCH:-amd64}
+
+WORKDIR /go/src/kubemacpool
+RUN dnf install -y wget && dnf clean all
+COPY go.mod .
+COPY go.sum .
+RUN GO_VERSION=$(sed -En 's/^go +(.*)$/\1/p' go.mod) && \
+    wget https://dl.google.com/go/go${GO_VERSION}.${BUILDOS}-${BUILDARCH}.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.${BUILDOS}-${BUILDARCH}.tar.gz && \
+    rm go${GO_VERSION}.${BUILDOS}-${BUILDARCH}.tar.gz
+
+ENV PATH=$PATH:/usr/local/go/bin
+RUN go mod download
+COPY . .
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o build/_output/bin/manager github.com/k8snetworkplumbingwg/kubemacpool/cmd/manager
 
